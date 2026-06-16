@@ -141,6 +141,11 @@ func (p *lbPicker) Pick(ctx context.Context, opts balancer.PickOptions) (balance
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	// If there are no ready subConns, block the RPC rather than dropping it.
+	if len(p.subConns) <= 0 {
+		return nil, nil, balancer.ErrNoSubConnAvailable
+	}
+
 	// Layer one roundrobin on serverList.
 	s := p.serverList[p.serverListNext]
 	p.serverListNext = (p.serverListNext + 1) % len(p.serverList)
@@ -149,11 +154,6 @@ func (p *lbPicker) Pick(ctx context.Context, opts balancer.PickOptions) (balance
 	if s.Drop {
 		p.stats.drop(s.LoadBalanceToken)
 		return nil, nil, status.Errorf(codes.Unavailable, "request dropped by grpclb")
-	}
-
-	// If not a drop but there's no ready subConns.
-	if len(p.subConns) <= 0 {
-		return nil, nil, balancer.ErrNoSubConnAvailable
 	}
 
 	// Return the next ready subConn in the list, also collect rpc stats.
