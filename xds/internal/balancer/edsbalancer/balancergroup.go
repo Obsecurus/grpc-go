@@ -157,18 +157,18 @@ type pickerState struct {
 // sub-balancer manager by a high level balancer.
 //
 // Updates from ClientConn are forwarded to sub-balancers
-//  - service config update
-//     - Not implemented
-//  - address update
-//  - subConn state change
-//     - find the corresponding balancer and forward
+//   - service config update
+//   - Not implemented
+//   - address update
+//   - subConn state change
+//   - find the corresponding balancer and forward
 //
 // Actions from sub-balances are forwarded to parent ClientConn
-//  - new/remove SubConn
-//  - picker update and health states change
-//     - sub-pickers are grouped into a group-picker
-//     - aggregated connectivity state is the overall state of all pickers.
-//  - resolveNow
+//   - new/remove SubConn
+//   - picker update and health states change
+//   - sub-pickers are grouped into a group-picker
+//   - aggregated connectivity state is the overall state of all pickers.
+//   - resolveNow
 //
 // Sub-balancers are only built when the balancer group is started. If the
 // balancer group is closed, the sub-balancers are also closed. And it's
@@ -557,9 +557,9 @@ func buildPickerAndState(m map[internal.Locality]*pickerState) balancer.State {
 		aggregatedState = connectivity.TransientFailure
 	}
 	if aggregatedState == connectivity.TransientFailure {
-		return balancer.State{aggregatedState, base.NewErrPickerV2(balancer.ErrTransientFailure)}
+		return balancer.State{ConnectivityState: aggregatedState, Picker: base.NewErrPickerV2(balancer.ErrTransientFailure)}
 	}
-	return balancer.State{aggregatedState, newPickerGroup(readyPickerWithWeights)}
+	return balancer.State{ConnectivityState: aggregatedState, Picker: newPickerGroup(readyPickerWithWeights)}
 }
 
 // RandomWRR constructor, to be modified in tests.
