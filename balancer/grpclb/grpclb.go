@@ -21,7 +21,8 @@
 // Package grpclb defines a grpclb balancer.
 //
 // To install grpclb balancer, import this package as:
-//    import _ "google.golang.org/grpc/balancer/grpclb"
+//
+//	import _ "google.golang.org/grpc/balancer/grpclb"
 package grpclb
 
 import (
@@ -187,7 +188,7 @@ type lbBalancer struct {
 	// send to remote LB ClientConn through this resolver.
 	manualResolver *lbManualResolver
 	// The ClientConn to talk to the remote balancer.
-	ccRemoteLB *grpc.ClientConn
+	ccRemoteLB *remoteBalancerCCWrapper
 	// backoff for calling remote balancer.
 	backoff backoff.Strategy
 
@@ -226,8 +227,9 @@ type lbBalancer struct {
 
 // regeneratePicker takes a snapshot of the balancer, and generates a picker from
 // it. The picker
-//  - always returns ErrTransientFailure if the balancer is in TransientFailure,
-//  - does two layer roundrobin pick otherwise.
+//   - always returns ErrTransientFailure if the balancer is in TransientFailure,
+//   - does two layer roundrobin pick otherwise.
+//
 // Caller must hold lb.mu.
 func (lb *lbBalancer) regeneratePicker(resetDrop bool) {
 	if lb.state == connectivity.TransientFailure {
@@ -288,9 +290,9 @@ func (lb *lbBalancer) regeneratePicker(resetDrop bool) {
 // those in cache (SubConns are cached for 10 seconds after remove).
 //
 // The aggregated state is:
-//  - If at least one SubConn in Ready, the aggregated state is Ready;
-//  - Else if at least one SubConn in Connecting, the aggregated state is Connecting;
-//  - Else the aggregated state is TransientFailure.
+//   - If at least one SubConn in Ready, the aggregated state is Ready;
+//   - Else if at least one SubConn in Connecting, the aggregated state is Connecting;
+//   - Else the aggregated state is TransientFailure.
 func (lb *lbBalancer) aggregateSubConnStates() connectivity.State {
 	var numConnecting uint64
 
@@ -426,6 +428,8 @@ func (lb *lbBalancer) UpdateClientConnState(ccs balancer.ClientConnState) error 
 
 	addrs := ccs.ResolverState.Addresses
 	if len(addrs) == 0 {
+		// There should be at least one address, either grpclb server or
+		// fallback. Empty address is not valid.
 		return balancer.ErrBadResolverState
 	}
 
@@ -439,28 +443,33 @@ func (lb *lbBalancer) UpdateClientConnState(ccs balancer.ClientConnState) error 
 		}
 	}
 
-	if lb.ccRemoteLB == nil {
-		if len(remoteBalancerAddrs) == 0 {
-			grpclog.Errorf("grpclb: no remote balancer address is available, should never happen")
-			return balancer.ErrBadResolverState
+	if len(remoteBalancerAddrs) == 0 {
+		if lb.ccRemoteLB != nil {
+			lb.ccRemoteLB.close()
+			lb.ccRemoteLB = nil
 		}
+	} else if lb.ccRemoteLB == nil {
 		// First time receiving resolved addresses, create a cc to remote
 		// balancers.
-		lb.dialRemoteLB(remoteBalancerAddrs[0].ServerName)
+		lb.newRemoteBalancerCCWrapper()
 		// Start the fallback goroutine.
 		go lb.fallbackToBackendsAfter(lb.fallbackTimeout)
 	}
 
-	// cc to remote balancers uses lb.manualResolver. Send the updated remote
-	// balancer addresses to it through manualResolver.
-	lb.manualResolver.UpdateState(resolver.State{Addresses: remoteBalancerAddrs})
+	if lb.ccRemoteLB != nil {
+		// cc to remote balancers uses lb.manualResolver. Send the updated remote
+		// balancer addresses to it through manualResolver.
+		lb.manualResolver.UpdateState(resolver.State{Addresses: remoteBalancerAddrs})
+	}
 
 	lb.mu.Lock()
 	lb.resolvedBackendAddrs = backendAddrs
-	if lb.inFallback {
-		// This means we received a new list of resolved backends, and we are
-		// still in fallback mode. Need to update the list of backends we are
-		// using to the new list of backends.
+	if len(remoteBalancerAddrs) == 0 || lb.inFallback {
+		// If there's no remote balancer address in ClientConn update, grpclb
+		// enters fallback mode immediately.
+		//
+		// If a new update is received while grpclb is in fallback, update the
+		// list of backends being used to the new fallback backends.
 		lb.refreshSubConns(lb.resolvedBackendAddrs, true, lb.usePickFirst)
 	}
 	lb.mu.Unlock()
@@ -475,7 +484,7 @@ func (lb *lbBalancer) Close() {
 	}
 	close(lb.doneCh)
 	if lb.ccRemoteLB != nil {
-		lb.ccRemoteLB.Close()
+		lb.ccRemoteLB.close()
 	}
 	lb.cc.close()
 }
