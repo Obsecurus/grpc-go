@@ -59,7 +59,13 @@ func (lb *lbBalancer) processServerList(l *lbpb.ServerList) {
 	var backendAddrs []resolver.Address
 	for i, s := range l.Servers {
 		if s.Drop {
-			continue
+			if len(s.IpAddress) == 0 {
+				// Pure drop entry with no backend address; skip SubConn creation.
+				continue
+			}
+			// Drop entry with a backend address: create a SubConn so its
+			// readiness can be tracked. The picker uses SubConn readiness to
+			// decide when to actually start dropping (see lbPicker.Pick).
 		}
 
 		md := metadata.Pairs(lbTokeyKey, s.LoadBalanceToken)

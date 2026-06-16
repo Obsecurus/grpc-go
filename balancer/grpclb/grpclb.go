@@ -21,7 +21,8 @@
 // Package grpclb defines a grpclb balancer.
 //
 // To install grpclb balancer, import this package as:
-//    import _ "google.golang.org/grpc/balancer/grpclb"
+//
+//	import _ "google.golang.org/grpc/balancer/grpclb"
 package grpclb
 
 import (
@@ -241,8 +242,9 @@ type lbBalancer struct {
 
 // regeneratePicker takes a snapshot of the balancer, and generates a picker from
 // it. The picker
-//  - always returns ErrTransientFailure if the balancer is in TransientFailure,
-//  - does two layer roundrobin pick otherwise.
+//   - always returns ErrTransientFailure if the balancer is in TransientFailure,
+//   - does two layer roundrobin pick otherwise.
+//
 // Caller must hold lb.mu.
 func (lb *lbBalancer) regeneratePicker() {
 	if lb.state == connectivity.TransientFailure {
@@ -250,8 +252,10 @@ func (lb *lbBalancer) regeneratePicker() {
 		return
 	}
 	var readySCs []balancer.SubConn
+	var allSCs []balancer.SubConn
 	for _, a := range lb.backendAddrs {
 		if sc, ok := lb.subConns[a]; ok {
+			allSCs = append(allSCs, sc)
 			if st, ok := lb.scStates[sc]; ok && st == connectivity.Ready {
 				readySCs = append(readySCs, sc)
 			}
@@ -267,9 +271,10 @@ func (lb *lbBalancer) regeneratePicker() {
 		return
 	}
 	lb.picker = &lbPicker{
-		serverList: lb.fullServerList,
-		subConns:   readySCs,
-		stats:      lb.clientStats,
+		serverList:  lb.fullServerList,
+		subConns:    readySCs,
+		allSubConns: allSCs,
+		stats:       lb.clientStats,
 	}
 }
 

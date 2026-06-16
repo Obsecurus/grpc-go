@@ -133,6 +133,11 @@ type lbPicker struct {
 	serverListNext int
 	subConns       []balancer.SubConn // The subConns that were READY when taking the snapshot.
 	subConnsNext   int
+	// allSubConns contains all subConns (including not-yet-ready ones). When a
+	// drop entry is selected but no SubConn is ready, we pick from allSubConns
+	// so the RPC is counted as failedToSend rather than silently discarded.
+	allSubConns     []balancer.SubConn
+	allSubConnsNext int
 
 	stats *rpcStats
 }
@@ -145,10 +150,27 @@ func (p *lbPicker) Pick(ctx context.Context, opts balancer.PickOptions) (balance
 	s := p.serverList[p.serverListNext]
 	p.serverListNext = (p.serverListNext + 1) % len(p.serverList)
 
-	// If it's a drop, return an error and fail the RPC.
+	// If it's a drop, only drop the RPC when at least one SubConn is ready.
+	// Otherwise fall back to picking from allSubConns so the call is counted
+	// as failedToSend rather than lost.
 	if s.Drop {
-		p.stats.drop(s.LoadBalanceToken)
-		return nil, nil, status.Errorf(codes.Unavailable, "request dropped by grpclb")
+		if len(p.subConns) > 0 {
+			p.stats.drop(s.LoadBalanceToken)
+			return nil, nil, status.Errorf(codes.Unavailable, "request dropped by grpclb")
+		}
+		if len(p.allSubConns) > 0 {
+			sc := p.allSubConns[p.allSubConnsNext]
+			p.allSubConnsNext = (p.allSubConnsNext + 1) % len(p.allSubConns)
+			done := func(info balancer.DoneInfo) {
+				if !info.BytesSent {
+					p.stats.failedToSend()
+				} else if info.BytesReceived {
+					p.stats.knownReceived()
+				}
+			}
+			return sc, done, nil
+		}
+		return nil, nil, balancer.ErrNoSubConnAvailable
 	}
 
 	// If not a drop but there's no ready subConns.
