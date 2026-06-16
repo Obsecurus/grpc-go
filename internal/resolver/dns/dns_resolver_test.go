@@ -637,7 +637,7 @@ func generateSCF(name string) []string {
 
 // generateSC returns a service config string in JSON format for the input name.
 func generateSC(name string) string {
-	_, cnt := scLookupTbl[name]
+	_, cnt := scLookupTbl[txtPrefix+name]
 	if !cnt || name == "no.attribute" {
 		return ""
 	}
@@ -658,12 +658,12 @@ var txtLookupTbl = struct {
 	tbl map[string][]string
 }{
 	tbl: map[string][]string{
-		"foo.bar.com":          generateSCF("foo.bar.com"),
-		"srv.ipv4.single.fake": generateSCF("srv.ipv4.single.fake"),
-		"srv.ipv4.multi.fake":  generateSCF("srv.ipv4.multi.fake"),
-		"srv.ipv6.single.fake": generateSCF("srv.ipv6.single.fake"),
-		"srv.ipv6.multi.fake":  generateSCF("srv.ipv6.multi.fake"),
-		"no.attribute":         generateSCF("no.attribute"),
+		txtPrefix + "foo.bar.com":          generateSCF("foo.bar.com"),
+		txtPrefix + "srv.ipv4.single.fake": generateSCF("srv.ipv4.single.fake"),
+		txtPrefix + "srv.ipv4.multi.fake":  generateSCF("srv.ipv4.multi.fake"),
+		txtPrefix + "srv.ipv6.single.fake": generateSCF("srv.ipv6.single.fake"),
+		txtPrefix + "srv.ipv6.multi.fake":  generateSCF("srv.ipv6.multi.fake"),
+		txtPrefix + "no.attribute":         generateSCF("no.attribute"),
 	},
 }
 
@@ -857,8 +857,8 @@ func mutateTbl(target string) func() {
 	hostLookupTbl.tbl[target] = hostLookupTbl.tbl[target][:len(oldHostTblEntry)-1]
 	hostLookupTbl.Unlock()
 	txtLookupTbl.Lock()
-	oldTxtTblEntry := txtLookupTbl.tbl[target]
-	txtLookupTbl.tbl[target] = []string{""}
+	oldTxtTblEntry := txtLookupTbl.tbl[txtPrefix+target]
+	txtLookupTbl.tbl[txtPrefix+target] = []string{""}
 	txtLookupTbl.Unlock()
 
 	return func() {
@@ -866,7 +866,7 @@ func mutateTbl(target string) func() {
 		hostLookupTbl.tbl[target] = oldHostTblEntry
 		hostLookupTbl.Unlock()
 		txtLookupTbl.Lock()
-		txtLookupTbl.tbl[target] = oldTxtTblEntry
+		txtLookupTbl.tbl[txtPrefix+target] = oldTxtTblEntry
 		txtLookupTbl.Unlock()
 	}
 }
@@ -1066,12 +1066,25 @@ func TestDisableServiceConfig(t *testing.T) {
 		}
 		var cnt int
 		var sc string
-		for {
-			sc, cnt = cc.getSc()
-			if cnt > 0 {
-				break
+		if !a.disableServiceConfig {
+			for {
+				sc, cnt = cc.getSc()
+				if cnt > 0 {
+					break
+				}
+				time.Sleep(time.Millisecond)
 			}
-			time.Sleep(time.Millisecond)
+		} else {
+			// When service config is disabled, NewServiceConfig is never called.
+			// Wait for addresses to confirm resolution completed, then check SC.
+			for {
+				_, cnt = cc.getAddress()
+				if cnt > 0 {
+					break
+				}
+				time.Sleep(time.Millisecond)
+			}
+			sc, _ = cc.getSc()
 		}
 		if !reflect.DeepEqual(a.scWant, sc) {
 			t.Errorf("Resolved service config of target: %q = %+v, want %+v\n", a.target, sc, a.scWant)
