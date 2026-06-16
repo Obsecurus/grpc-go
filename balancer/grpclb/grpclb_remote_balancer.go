@@ -278,6 +278,9 @@ func (ccw *remoteBalancerCCWrapper) readServerList(s *balanceLoadClientStream) e
 		if serverList := reply.GetServerList(); serverList != nil {
 			ccw.lb.processServerList(serverList)
 		}
+		if reply.GetFallbackResponse() != nil {
+			ccw.lb.processFallbackResponse()
+		}
 	}
 }
 

@@ -21,7 +21,8 @@
 // Package grpclb defines a grpclb balancer.
 //
 // To install grpclb balancer, import this package as:
-//    import _ "google.golang.org/grpc/balancer/grpclb"
+//
+//	import _ "google.golang.org/grpc/balancer/grpclb"
 package grpclb
 
 import (
@@ -226,8 +227,9 @@ type lbBalancer struct {
 
 // regeneratePicker takes a snapshot of the balancer, and generates a picker from
 // it. The picker
-//  - always returns ErrTransientFailure if the balancer is in TransientFailure,
-//  - does two layer roundrobin pick otherwise.
+//   - always returns ErrTransientFailure if the balancer is in TransientFailure,
+//   - does two layer roundrobin pick otherwise.
+//
 // Caller must hold lb.mu.
 func (lb *lbBalancer) regeneratePicker(resetDrop bool) {
 	if lb.state == connectivity.TransientFailure {
@@ -288,9 +290,9 @@ func (lb *lbBalancer) regeneratePicker(resetDrop bool) {
 // those in cache (SubConns are cached for 10 seconds after remove).
 //
 // The aggregated state is:
-//  - If at least one SubConn in Ready, the aggregated state is Ready;
-//  - Else if at least one SubConn in Connecting, the aggregated state is Connecting;
-//  - Else the aggregated state is TransientFailure.
+//   - If at least one SubConn in Ready, the aggregated state is Ready;
+//   - Else if at least one SubConn in Connecting, the aggregated state is Connecting;
+//   - Else the aggregated state is TransientFailure.
 func (lb *lbBalancer) aggregateSubConnStates() connectivity.State {
 	var numConnecting uint64
 
@@ -368,6 +370,18 @@ func (lb *lbBalancer) updateStateAndPicker(forceRegeneratePicker bool, resetDrop
 	}
 
 	lb.cc.UpdateState(balancer.State{ConnectivityState: lb.state, Picker: lb.picker})
+}
+
+// processFallbackResponse handles an explicit fallback response from the remote
+// balancer. It enters fallback mode immediately using the resolved backend
+// addresses.
+func (lb *lbBalancer) processFallbackResponse() {
+	if grpclog.V(2) {
+		grpclog.Infof("lbBalancer: entering fallback (explicit signal from remote balancer)")
+	}
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
+	lb.refreshSubConns(lb.resolvedBackendAddrs, true, lb.usePickFirst)
 }
 
 // fallbackToBackendsAfter blocks for fallbackTimeout and falls back to use
