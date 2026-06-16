@@ -281,6 +281,7 @@ func (lb *lbBalancer) callRemoteBalancer() (backoff bool, _ error) {
 }
 
 func (lb *lbBalancer) watchRemoteBalancer() {
+	defer close(lb.ccRemoteLBDone)
 	var retryCount int
 	for {
 		doBackoff, err := lb.callRemoteBalancer()
@@ -295,6 +296,14 @@ func (lb *lbBalancer) watchRemoteBalancer() {
 					grpclog.Warning(err)
 				}
 			}
+		}
+		// If the remote LB was intentionally closed (no balancer addresses in
+		// the last update), exit without triggering a re-resolve.
+		lb.mu.Lock()
+		noRemoteBalancer := lb.noRemoteBalancer
+		lb.mu.Unlock()
+		if noRemoteBalancer {
+			return
 		}
 		// Trigger a re-resolve when the stream errors.
 		lb.cc.cc.ResolveNow(resolver.ResolveNowOption{})
@@ -367,6 +376,7 @@ func (lb *lbBalancer) dialRemoteLB(remoteLBName string) {
 	if err != nil {
 		grpclog.Fatalf("failed to dial: %v", err)
 	}
+	lb.ccRemoteLBDone = make(chan struct{})
 	lb.ccRemoteLB = cc
 	go lb.watchRemoteBalancer()
 }
