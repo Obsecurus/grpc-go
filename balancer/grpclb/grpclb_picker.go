@@ -145,15 +145,17 @@ func (p *lbPicker) Pick(ctx context.Context, opts balancer.PickOptions) (balance
 	s := p.serverList[p.serverListNext]
 	p.serverListNext = (p.serverListNext + 1) % len(p.serverList)
 
+	// If there are no ready subConns, return ErrNoSubConnAvailable regardless
+	// of whether it's a drop or not. Drops should only happen when at least
+	// one subConn is ready.
+	if len(p.subConns) <= 0 {
+		return nil, nil, balancer.ErrNoSubConnAvailable
+	}
+
 	// If it's a drop, return an error and fail the RPC.
 	if s.Drop {
 		p.stats.drop(s.LoadBalanceToken)
 		return nil, nil, status.Errorf(codes.Unavailable, "request dropped by grpclb")
-	}
-
-	// If not a drop but there's no ready subConns.
-	if len(p.subConns) <= 0 {
-		return nil, nil, balancer.ErrNoSubConnAvailable
 	}
 
 	// Return the next ready subConn in the list, also collect rpc stats.
