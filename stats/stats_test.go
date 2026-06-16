@@ -511,7 +511,9 @@ func checkInPayload(t *testing.T, d *gotData, e *expectedData) {
 			t.Fatalf("st.Lenght = %v, want %v", st.Length, len(b))
 		}
 	}
-	// TODO check WireLength and ReceivedTime.
+	if st.WireLength == 0 {
+		t.Fatalf("st.WireLength = 0, want <non-zero>")
+	}
 	if st.RecvTime.IsZero() {
 		t.Fatalf("st.ReceivedTime = %v, want <non-zero>", st.RecvTime)
 	}
