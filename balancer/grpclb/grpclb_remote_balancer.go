@@ -287,6 +287,8 @@ func (lb *lbBalancer) watchRemoteBalancer() {
 		select {
 		case <-lb.doneCh:
 			return
+		case <-lb.ccRemoteLBDone:
+			return
 		default:
 			if err != nil {
 				if err == errServerTerminatedConnection {
@@ -319,6 +321,9 @@ func (lb *lbBalancer) watchRemoteBalancer() {
 		select {
 		case <-timer.C:
 		case <-lb.doneCh:
+			timer.Stop()
+			return
+		case <-lb.ccRemoteLBDone:
 			timer.Stop()
 			return
 		}
@@ -368,5 +373,10 @@ func (lb *lbBalancer) dialRemoteLB(remoteLBName string) {
 		grpclog.Fatalf("failed to dial: %v", err)
 	}
 	lb.ccRemoteLB = cc
-	go lb.watchRemoteBalancer()
+	lb.ccRemoteLBDone = make(chan struct{})
+	lb.remoteBalancerWg.Add(1)
+	go func() {
+		lb.watchRemoteBalancer()
+		lb.remoteBalancerWg.Done()
+	}()
 }

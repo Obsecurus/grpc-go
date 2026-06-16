@@ -851,6 +851,110 @@ func TestFallback(t *testing.T) {
 	}
 }
 
+// TestFallBackWithNoServerAddress tests that grpclb enters fallback when the
+// resolver sends an update with no balancer addresses (e.g. when grpclb is
+// selected via service config rather than by resolver).
+func TestFallBackWithNoServerAddress(t *testing.T) {
+	balancer.Register(newLBBuilderWithFallbackTimeout(100 * time.Millisecond))
+	defer balancer.Register(newLBBuilder())
+
+	defer leakcheck.Check(t)
+
+	r, cleanup := manual.GenerateAndRegisterManualResolver()
+	defer cleanup()
+
+	tss, cleanup, err := newLoadBalancer(1)
+	if err != nil {
+		t.Fatalf("failed to create new load balancer: %v", err)
+	}
+	defer cleanup()
+
+	// Start a standalone backend to use as fallback.
+	beLis, err := net.Listen("tcp", "localhost:0")
+	if err != nil {
+		t.Fatalf("Failed to listen %v", err)
+	}
+	defer beLis.Close()
+	standaloneBEs := startBackends(beServerName, true, beLis)
+	defer stopBackends(standaloneBEs)
+
+	be := &lbpb.Server{
+		IpAddress:        tss.beIPs[0],
+		Port:             int32(tss.bePorts[0]),
+		LoadBalanceToken: lbToken,
+	}
+	var bes []*lbpb.Server
+	bes = append(bes, be)
+	sl := &lbpb.ServerList{
+		Servers: bes,
+	}
+	tss.ls.sls <- sl
+	creds := serverNameCheckCreds{
+		expected: beServerName,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cc, err := grpc.DialContext(ctx, r.Scheme()+":///"+beServerName,
+		grpc.WithTransportCredentials(&creds), grpc.WithContextDialer(fakeNameDialer))
+	if err != nil {
+		t.Fatalf("Failed to dial to the backend %v", err)
+	}
+	defer cc.Close()
+	testC := testpb.NewTestServiceClient(cc)
+
+	// First update: provide a grpclb address so grpclb dials the remote
+	// balancer and routes RPCs to its backend.
+	r.UpdateState(resolver.State{Addresses: []resolver.Address{{
+		Addr:       tss.lbAddr,
+		Type:       resolver.GRPCLB,
+		ServerName: lbServerName,
+	}, {
+		Addr:       beLis.Addr().String(),
+		Type:       resolver.Backend,
+		ServerName: beServerName,
+	}}})
+
+	var p peer.Peer
+	var backendUsed bool
+	for i := 0; i < 1000; i++ {
+		if _, err := testC.EmptyCall(context.Background(), &testpb.Empty{}, grpc.WaitForReady(true), grpc.Peer(&p)); err != nil {
+			t.Fatalf("_.EmptyCall(_, _) = _, %v, want _, <nil>", err)
+		}
+		if p.Addr.(*net.TCPAddr).Port == tss.bePorts[0] {
+			backendUsed = true
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if !backendUsed {
+		t.Fatalf("No RPC sent to backend behind remote balancer after 1 second")
+	}
+
+	// Second update: remove the grpclb address. grpclb should close the
+	// connection to the remote balancer and enter fallback mode, routing
+	// RPCs directly to the resolved backend.
+	r.UpdateState(resolver.State{Addresses: []resolver.Address{{
+		Addr:       beLis.Addr().String(),
+		Type:       resolver.Backend,
+		ServerName: beServerName,
+	}}})
+
+	var fallbackUsed bool
+	for i := 0; i < 1000; i++ {
+		if _, err := testC.EmptyCall(context.Background(), &testpb.Empty{}, grpc.WaitForReady(true), grpc.Peer(&p)); err != nil {
+			t.Fatalf("%v.EmptyCall(_, _) = _, %v, want _, <nil>", testC, err)
+		}
+		if p.Addr.String() == beLis.Addr().String() {
+			fallbackUsed = true
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if !fallbackUsed {
+		t.Fatalf("No RPC sent to fallback after 1 second")
+	}
+}
+
 func TestGRPCLBPickFirst(t *testing.T) {
 	defer leakcheck.Check(t)
 
