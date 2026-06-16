@@ -99,6 +99,19 @@ func (b *baseBalancer) UpdateClientConnState(s balancer.ClientConnState) error {
 	if grpclog.V(2) {
 		grpclog.Infoln("base.baseBalancer: got new ClientConn state: ", s)
 	}
+	// Treat an empty address list as a transient error: report it and return
+	// ErrBadResolverState so the resolver is asked to re-resolve.  Existing
+	// SubConns are left untouched so that in-flight RPCs can continue when the
+	// channel is still in a ready state.
+	if len(s.ResolverState.Addresses) == 0 {
+		b.ResolverError(errors.New("produced zero addresses"))
+		if b.picker != nil {
+			b.cc.UpdateBalancerState(b.state, b.picker)
+		} else {
+			b.cc.UpdateState(balancer.State{ConnectivityState: b.state, Picker: b.v2Picker})
+		}
+		return balancer.ErrBadResolverState
+	}
 	// addrsSet is the set converted from addrs, it's used for quick lookup of an address.
 	addrsSet := make(map[resolver.Address]struct{})
 	for _, a := range s.ResolverState.Addresses {
@@ -129,8 +142,8 @@ func (b *baseBalancer) UpdateClientConnState(s balancer.ClientConnState) error {
 
 // regeneratePicker takes a snapshot of the balancer, and generates a picker
 // from it. The picker is
-//  - errPicker with ErrTransientFailure if the balancer is in TransientFailure,
-//  - built by the pickerBuilder with all READY SubConns otherwise.
+//   - errPicker with ErrTransientFailure if the balancer is in TransientFailure,
+//   - built by the pickerBuilder with all READY SubConns otherwise.
 func (b *baseBalancer) regeneratePicker(err error) {
 	if b.state == connectivity.TransientFailure {
 		if b.pickerBuilder != nil {
