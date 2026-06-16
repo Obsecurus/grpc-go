@@ -204,8 +204,12 @@ func (d *dnsResolver) watcher() {
 		case <-d.rn:
 		}
 
-		state := d.lookup()
-		d.cc.UpdateState(*state)
+		state, err := d.lookup()
+		if err != nil {
+			d.cc.ReportError(err)
+		} else {
+			d.cc.UpdateState(*state)
+		}
 
 		// Sleep to prevent excessive re-resolutions. Incoming resolution requests
 		// will be queued in d.rn.
@@ -284,12 +288,12 @@ func (d *dnsResolver) lookupTXT() *serviceconfig.ParseResult {
 	return d.cc.ParseServiceConfig(sc)
 }
 
-func (d *dnsResolver) lookupHost() []resolver.Address {
+func (d *dnsResolver) lookupHost() ([]resolver.Address, error) {
 	var newAddrs []resolver.Address
 	addrs, err := d.resolver.LookupHost(d.ctx, d.host)
 	if err != nil {
 		grpclog.Warningf("grpc: failed dns A record lookup due to %v.\n", err)
-		return nil
+		return nil, err
 	}
 	for _, a := range addrs {
 		a, ok := formatIP(a)
@@ -300,18 +304,22 @@ func (d *dnsResolver) lookupHost() []resolver.Address {
 		addr := a + ":" + d.port
 		newAddrs = append(newAddrs, resolver.Address{Addr: addr})
 	}
-	return newAddrs
+	return newAddrs, nil
 }
 
-func (d *dnsResolver) lookup() *resolver.State {
+func (d *dnsResolver) lookup() (*resolver.State, error) {
 	srv := d.lookupSRV()
+	addrs, err := d.lookupHost()
+	if err != nil {
+		return nil, err
+	}
 	state := &resolver.State{
-		Addresses: append(d.lookupHost(), srv...),
+		Addresses: append(addrs, srv...),
 	}
 	if !d.disableServiceConfig {
 		state.ServiceConfig = d.lookupTXT()
 	}
-	return state
+	return state, nil
 }
 
 // formatIP returns ok = false if addr is not a valid textual representation of an IP address.
