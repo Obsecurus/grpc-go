@@ -281,6 +281,7 @@ func (lb *lbBalancer) callRemoteBalancer() (backoff bool, _ error) {
 }
 
 func (lb *lbBalancer) watchRemoteBalancer() {
+	defer close(lb.ccRemoteLBDoneCh)
 	var retryCount int
 	for {
 		doBackoff, err := lb.callRemoteBalancer()
@@ -295,6 +296,15 @@ func (lb *lbBalancer) watchRemoteBalancer() {
 					grpclog.Warning(err)
 				}
 			}
+		}
+		// If the remote LB ClientConn was closed because there are no remote
+		// balancer addresses, exit without triggering re-resolve or entering
+		// fallback; UpdateClientConnState handles fallback in that case.
+		lb.mu.Lock()
+		noRemoteBalancerAddrs := lb.noRemoteBalancerAddrs
+		lb.mu.Unlock()
+		if noRemoteBalancerAddrs {
+			return
 		}
 		// Trigger a re-resolve when the stream errors.
 		lb.cc.cc.ResolveNow(resolver.ResolveNowOption{})
@@ -367,6 +377,7 @@ func (lb *lbBalancer) dialRemoteLB(remoteLBName string) {
 	if err != nil {
 		grpclog.Fatalf("failed to dial: %v", err)
 	}
+	lb.ccRemoteLBDoneCh = make(chan struct{})
 	lb.ccRemoteLB = cc
 	go lb.watchRemoteBalancer()
 }
