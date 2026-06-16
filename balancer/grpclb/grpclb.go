@@ -21,7 +21,8 @@
 // Package grpclb defines a grpclb balancer.
 //
 // To install grpclb balancer, import this package as:
-//    import _ "google.golang.org/grpc/balancer/grpclb"
+//
+//	import _ "google.golang.org/grpc/balancer/grpclb"
 package grpclb
 
 import (
@@ -241,10 +242,15 @@ type lbBalancer struct {
 
 // regeneratePicker takes a snapshot of the balancer, and generates a picker from
 // it. The picker
-//  - always returns ErrTransientFailure if the balancer is in TransientFailure,
-//  - does two layer roundrobin pick otherwise.
+//   - always returns ErrTransientFailure if the balancer is in TransientFailure,
+//   - does two layer roundrobin pick otherwise.
+//
+// If resetServerListIndex is false, the new picker will continue from where the
+// previous picker left off in the server list (preserving the drop index).
+// If true, the server list index is reset to 0 (used when a new server list
+// is received).
 // Caller must hold lb.mu.
-func (lb *lbBalancer) regeneratePicker() {
+func (lb *lbBalancer) regeneratePicker(resetServerListIndex bool) {
 	if lb.state == connectivity.TransientFailure {
 		lb.picker = &errPicker{err: balancer.ErrTransientFailure}
 		return
@@ -269,10 +275,21 @@ func (lb *lbBalancer) regeneratePicker() {
 		lb.picker = &rrPicker{subConns: readySCs}
 		return
 	}
+	// Preserve the drop index from the previous picker so that subchannel
+	// state changes don't reset which server list entry is picked next.
+	var serverListNext int
+	if !resetServerListIndex {
+		if p, ok := lb.picker.(*lbPicker); ok {
+			p.mu.Lock()
+			serverListNext = p.serverListNext
+			p.mu.Unlock()
+		}
+	}
 	lb.picker = &lbPicker{
-		serverList: lb.fullServerList,
-		subConns:   readySCs,
-		stats:      lb.clientStats,
+		serverList:     lb.fullServerList,
+		serverListNext: serverListNext,
+		subConns:       readySCs,
+		stats:          lb.clientStats,
 	}
 }
 
@@ -306,7 +323,7 @@ func (lb *lbBalancer) HandleSubConnStateChange(sc balancer.SubConn, s connectivi
 	//  - the aggregated state of balancer became non-TransientFailure from TransientFailure
 	if (oldS == connectivity.Ready) != (s == connectivity.Ready) ||
 		(lb.state == connectivity.TransientFailure) != (oldAggrState == connectivity.TransientFailure) {
-		lb.regeneratePicker()
+		lb.regeneratePicker(false)
 	}
 
 	lb.cc.UpdateBalancerState(lb.state, lb.picker)
