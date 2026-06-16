@@ -277,6 +277,10 @@ func (ccw *remoteBalancerCCWrapper) readServerList(s *balanceLoadClientStream) e
 		}
 		if serverList := reply.GetServerList(); serverList != nil {
 			ccw.lb.processServerList(serverList)
+		} else if reply.GetFallbackResponse() != nil {
+			ccw.lb.mu.Lock()
+			ccw.lb.refreshSubConns(ccw.lb.resolvedBackendAddrs, true, ccw.lb.usePickFirst)
+			ccw.lb.mu.Unlock()
 		}
 	}
 }
