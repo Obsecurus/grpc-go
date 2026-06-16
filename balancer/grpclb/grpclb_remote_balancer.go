@@ -296,6 +296,15 @@ func (lb *lbBalancer) watchRemoteBalancer() {
 				}
 			}
 		}
+		lb.mu.Lock()
+		closing := lb.ccRemoteLBClosing
+		lb.mu.Unlock()
+		if closing {
+			// The connection was closed intentionally (no balancer addresses).
+			// Exit without triggering a re-resolve; the caller will set up
+			// fallback.
+			return
+		}
 		// Trigger a re-resolve when the stream errors.
 		lb.cc.cc.ResolveNow(resolver.ResolveNowOption{})
 
@@ -368,5 +377,9 @@ func (lb *lbBalancer) dialRemoteLB(remoteLBName string) {
 		grpclog.Fatalf("failed to dial: %v", err)
 	}
 	lb.ccRemoteLB = cc
-	go lb.watchRemoteBalancer()
+	lb.watchRemoteBalancerWg.Add(1)
+	go func() {
+		defer lb.watchRemoteBalancerWg.Done()
+		lb.watchRemoteBalancer()
+	}()
 }

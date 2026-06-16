@@ -21,7 +21,8 @@
 // Package grpclb defines a grpclb balancer.
 //
 // To install grpclb balancer, import this package as:
-//    import _ "google.golang.org/grpc/balancer/grpclb"
+//
+//	import _ "google.golang.org/grpc/balancer/grpclb"
 package grpclb
 
 import (
@@ -195,6 +196,15 @@ type lbBalancer struct {
 	// and will update its content.
 	clientStats *rpcStats
 
+	// ccRemoteLBClosing is set to true when ccRemoteLB is being intentionally
+	// closed (e.g., when the resolver sends no balancer addresses). When true,
+	// watchRemoteBalancer exits without calling ResolveNow.
+	// Protected by mu.
+	ccRemoteLBClosing bool
+	// watchRemoteBalancerWg is used to wait for the watchRemoteBalancer
+	// goroutine to exit.
+	watchRemoteBalancerWg sync.WaitGroup
+
 	mu sync.Mutex // guards everything following.
 	// The full server list including drops, used to check if the newly received
 	// serverList contains anything new. Each generate picker will also have
@@ -226,8 +236,9 @@ type lbBalancer struct {
 
 // regeneratePicker takes a snapshot of the balancer, and generates a picker from
 // it. The picker
-//  - always returns ErrTransientFailure if the balancer is in TransientFailure,
-//  - does two layer roundrobin pick otherwise.
+//   - always returns ErrTransientFailure if the balancer is in TransientFailure,
+//   - does two layer roundrobin pick otherwise.
+//
 // Caller must hold lb.mu.
 func (lb *lbBalancer) regeneratePicker(resetDrop bool) {
 	if lb.state == connectivity.TransientFailure {
@@ -288,9 +299,9 @@ func (lb *lbBalancer) regeneratePicker(resetDrop bool) {
 // those in cache (SubConns are cached for 10 seconds after remove).
 //
 // The aggregated state is:
-//  - If at least one SubConn in Ready, the aggregated state is Ready;
-//  - Else if at least one SubConn in Connecting, the aggregated state is Connecting;
-//  - Else the aggregated state is TransientFailure.
+//   - If at least one SubConn in Ready, the aggregated state is Ready;
+//   - Else if at least one SubConn in Connecting, the aggregated state is Connecting;
+//   - Else the aggregated state is TransientFailure.
 func (lb *lbBalancer) aggregateSubConnStates() connectivity.State {
 	var numConnecting uint64
 
@@ -439,13 +450,38 @@ func (lb *lbBalancer) UpdateClientConnState(ccs balancer.ClientConnState) error 
 		}
 	}
 
-	if lb.ccRemoteLB == nil {
-		if len(remoteBalancerAddrs) == 0 {
-			grpclog.Errorf("grpclb: no remote balancer address is available, should never happen")
-			return balancer.ErrBadResolverState
+	if len(remoteBalancerAddrs) == 0 {
+		// No remote balancer address is available. Enter fallback immediately.
+		lb.mu.Lock()
+		lb.resolvedBackendAddrs = backendAddrs
+		if lb.ccRemoteLB == nil {
+			// No connection to remote balancer exists; enter fallback with the
+			// resolved backends right away.
+			lb.refreshSubConns(lb.resolvedBackendAddrs, true, lb.usePickFirst)
+			lb.mu.Unlock()
+			return nil
 		}
-		// First time receiving resolved addresses, create a cc to remote
-		// balancers.
+		// An existing connection to the remote balancer must be closed.
+		// Signal watchRemoteBalancer to exit without calling ResolveNow, then
+		// wait for it to finish before entering fallback to avoid races.
+		lb.ccRemoteLBClosing = true
+		lb.mu.Unlock()
+		lb.ccRemoteLB.Close()
+		lb.watchRemoteBalancerWg.Wait()
+		lb.ccRemoteLB = nil
+		lb.mu.Lock()
+		lb.ccRemoteLBClosing = false
+		lb.remoteBalancerConnected = false
+		lb.serverListReceived = false
+		lb.fullServerList = nil
+		lb.refreshSubConns(lb.resolvedBackendAddrs, true, lb.usePickFirst)
+		lb.mu.Unlock()
+		return nil
+	}
+
+	if lb.ccRemoteLB == nil {
+		// First time receiving remote balancer addresses (or after an
+		// intentional close). Create a ClientConn to the remote balancer.
 		lb.dialRemoteLB(remoteBalancerAddrs[0].ServerName)
 		// Start the fallback goroutine.
 		go lb.fallbackToBackendsAfter(lb.fallbackTimeout)
